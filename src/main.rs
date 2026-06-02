@@ -3,10 +3,13 @@ use gtk4::{
 };
 use gtk4_layer_shell::{Edge, Layer, LayerShell};
 use gtk4::gdk::Display;
-use std::{fs, process};
+use std::{fs, time::Duration};
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 
 const PROBE_PATH: &str = "/var/lib/cynager/info.probe";
+const POLL_MS: u64 = 500;
 
 fn parse_walls(probe_path: &str) -> HashMap<String, String> {
     let mut walls: HashMap<String, String> = HashMap::new();
@@ -26,8 +29,8 @@ fn parse_walls(probe_path: &str) -> HashMap<String, String> {
     for line in content.lines() {
         let trimmed = line.trim();
 
-        if trimmed == ":set"          { in_set = true;  continue; }
-        if in_set && trimmed == ":end"{ in_set = false; in_walls = false; continue; }
+        if trimmed == ":set"           { in_set = true;  continue; }
+        if in_set && trimmed == ":end" { in_set = false; in_walls = false; continue; }
         if in_set && trimmed.starts_with("walls") { in_walls = true; continue; }
 
         if in_walls {
@@ -53,7 +56,27 @@ fn parse_walls(probe_path: &str) -> HashMap<String, String> {
     walls
 }
 
-fn build_wallpaper_window(app: &Application, monitor: &gtk4::gdk::Monitor, image_path: &str) {
+struct WallState {
+    pictures: HashMap<String, Picture>,
+}
+
+impl WallState {
+    fn apply(&self, walls: &HashMap<String, String>) {
+        for (connector, picture) in &self.pictures {
+            if let Some(path) = walls.get(connector) {
+                let file = gtk4::gio::File::for_path(path);
+                picture.set_file(Some(&file));
+                println!("[waul] updated {} => {}", connector, path);
+            }
+        }
+    }
+}
+
+fn build_wallpaper_window(
+    app: &Application,
+    monitor: &gtk4::gdk::Monitor,
+    image_path: &str,
+) -> Picture {
     let window = ApplicationWindow::new(app);
 
     window.init_layer_shell();
@@ -74,18 +97,23 @@ fn build_wallpaper_window(app: &Application, monitor: &gtk4::gdk::Monitor, image
 
     window.set_child(Some(&picture));
     window.present();
+
+    picture
 }
 
 fn activate(app: &Application) {
     let css = CssProvider::new();
     css.load_from_data(
         "
-        window {
-            background-color: #000000;
-        }
-        picture {
-            background-color: #000000;
-        }
+            window  { 
+                background-color: #000000;
+            }
+            picture { 
+                background-color: #000000;
+                background-image: radial-gradient(rgba(255, 255, 255, 0.06) 2px, transparent 0);
+                background-size: 30px 30px;
+                background-position: -5px -5px;
+            }
         ",
     );
     gtk4::style_context_add_provider_for_display(
@@ -95,12 +123,11 @@ fn activate(app: &Application) {
     );
 
     let walls = parse_walls(PROBE_PATH);
-    if walls.is_empty() {
-        eprintln!("[cynideWall] No walls entries found in {}", PROBE_PATH);
-    }
 
     let display = Display::default().expect("Could not get default display");
     let monitors = display.monitors();
+
+    let mut pictures: HashMap<String, Picture> = HashMap::new();
 
     for i in 0..monitors.n_items() {
         let monitor = monitors
@@ -111,13 +138,37 @@ fn activate(app: &Application) {
         let connector = monitor.connector().unwrap_or_default();
         let connector_str = connector.as_str();
 
-        if let Some(path) = walls.get(connector_str) {
-            println!("[cynideWall] {} => {}", connector_str, path);
-            build_wallpaper_window(app, &monitor, path);
-        } else {
-            eprintln!("[cynideWall] No wall configured for output '{}'", connector_str);
+        let path = walls.get(connector_str).map(|s| s.as_str()).unwrap_or("");
+        if path.is_empty() {
+            eprintln!("[waul] No wall configured for output '{}'", connector_str);
         }
+
+        let picture = build_wallpaper_window(app, &monitor, path);
+        pictures.insert(connector_str.to_string(), picture);
     }
+
+    let state = Arc::new(Mutex::new(WallState { pictures }));
+
+    let last_modified: Arc<Mutex<Option<SystemTime>>> = Arc::new(Mutex::new(
+        fs::metadata(PROBE_PATH).ok().and_then(|m| m.modified().ok()),
+    ));
+
+    glib::timeout_add_local(Duration::from_millis(POLL_MS), move || {
+        let current_mtime = fs::metadata(PROBE_PATH)
+            .ok()
+            .and_then(|m| m.modified().ok());
+
+        let mut last = last_modified.lock().unwrap();
+
+        if current_mtime != *last {
+            *last = current_mtime;
+            println!("[waul] info.probe changed, reloading walls...");
+            let new_walls = parse_walls(PROBE_PATH);
+            state.lock().unwrap().apply(&new_walls);
+        }
+
+        glib::ControlFlow::Continue
+    });
 }
 
 fn main() {
