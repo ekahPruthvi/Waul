@@ -1,2 +1,0 @@
-# Waul
-cynageOS wallpaper service

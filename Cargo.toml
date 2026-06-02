@@ -1,0 +1,12 @@
+[package]
+name = "waul"
+version = "0.1.0"
+edition = "2024"
+authors = ["ekahPruthvi <ekahpdp@gmail.com>"]
+description = "cynageos wallpaper service"
+license = "GPL-3.0"
+
+[dependencies]
+gtk4 = "0.9.7"
+gtk4-layer-shell = "0.5.0"
+rand = "0.9.1"
