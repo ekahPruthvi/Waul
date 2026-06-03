@@ -1,7 +1,7 @@
 use gtk4::{
-    glib, prelude::*, Application, ApplicationWindow, CssProvider, Picture,
+    glib, prelude::*, Application, ApplicationWindow, CssProvider, GestureClick, Picture,
 };
-use gtk4_layer_shell::{Edge, Layer, LayerShell};
+use gtk4_layer_shell::{Edge, Layer, LayerShell, KeyboardMode};
 use gtk4::gdk::Display;
 use std::{fs, time::Duration};
 use std::collections::HashMap;
@@ -88,7 +88,7 @@ fn build_wallpaper_window(
     let window = ApplicationWindow::new(app);
 
     window.init_layer_shell();
-    window.set_layer(Layer::Background);
+    window.set_layer(Layer::Bottom);
     window.set_monitor(Some(monitor));
     window.set_decorated(false);
     window.set_namespace(Some("cynideWallpaperService"));
@@ -97,6 +97,7 @@ fn build_wallpaper_window(
     window.set_anchor(Edge::Left,   true);
     window.set_anchor(Edge::Right,  true);
     window.set_exclusive_zone(-1);
+    window.set_keyboard_mode(KeyboardMode::None);
 
     let picture = Picture::for_filename(image_path);
     picture.set_can_shrink(true);
@@ -104,6 +105,19 @@ fn build_wallpaper_window(
     picture.set_vexpand(true);
 
     window.set_child(Some(&picture));
+
+    let gesture = GestureClick::new();
+    gesture.set_button(1); 
+    gesture.connect_released(|_, _, _, _| {
+        if let Err(e) = std::process::Command::new("pkill")
+            .args(["-USR1", "capsule"])
+            .spawn()
+        {
+            eprintln!("[waul] Failed to run pkill -USR1 capsule: {}", e);
+        }
+    });
+    window.add_controller(gesture);
+
     window.present();
 
     (window, picture)
