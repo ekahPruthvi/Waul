@@ -56,12 +56,20 @@ fn parse_walls(probe_path: &str) -> HashMap<String, String> {
     walls
 }
 
-struct WallState {
+struct AppState {
     pictures: HashMap<String, Picture>,
+    windows: HashMap<String, ApplicationWindow>,
 }
 
-impl WallState {
-    fn apply(&self, walls: &HashMap<String, String>) {
+impl AppState {
+    fn new() -> Self {
+        Self {
+            pictures: HashMap::new(),
+            windows: HashMap::new(),
+        }
+    }
+
+    fn apply_walls(&self, walls: &HashMap<String, String>) {
         for (connector, picture) in &self.pictures {
             if let Some(path) = walls.get(connector) {
                 let file = gtk4::gio::File::for_path(path);
@@ -76,7 +84,7 @@ fn build_wallpaper_window(
     app: &Application,
     monitor: &gtk4::gdk::Monitor,
     image_path: &str,
-) -> Picture {
+) -> (ApplicationWindow, Picture) {
     let window = ApplicationWindow::new(app);
 
     window.init_layer_shell();
@@ -98,17 +106,75 @@ fn build_wallpaper_window(
     window.set_child(Some(&picture));
     window.present();
 
-    picture
+    (window, picture)
+}
+
+fn snapshot_monitors(display: &Display) -> HashMap<String, gtk4::gdk::Monitor> {
+    let mut map = HashMap::new();
+    let monitors = display.monitors();
+    println!("[waul] snapshot: {} item(s) in monitor list", monitors.n_items());
+    for i in 0..monitors.n_items() {
+        if let Some(monitor) = monitors.item(i).and_downcast::<gtk4::gdk::Monitor>() {
+            let connector = monitor.connector().unwrap_or_default().to_string();
+            let valid     = monitor.is_valid();
+            println!("[waul]   [{i}] connector={connector:?} valid={valid}");
+            if valid && !connector.is_empty() {
+                map.insert(connector, monitor);
+            }
+        }
+    }
+    map
+}
+
+fn reconcile_monitors(
+    app: &Application,
+    display: &Display,
+    state: &mut AppState,
+    walls: &HashMap<String, String>,
+) {
+    let current = snapshot_monitors(display);
+
+    let gone: Vec<String> = state
+        .pictures
+        .keys()
+        .filter(|k| !current.contains_key(*k))
+        .cloned()
+        .collect();
+
+    for connector in &gone {
+        println!("[waul] monitor disconnected: {}", connector);
+        if let Some(win) = state.windows.remove(connector) {
+            win.close();
+        }
+        state.pictures.remove(connector);
+    }
+
+    for (connector, monitor) in &current {
+        if state.pictures.contains_key(connector) {
+            continue;
+        }
+
+        println!("[waul] monitor connected: {}", connector);
+
+        let path = walls.get(connector).map(|s| s.as_str()).unwrap_or("");
+        if path.is_empty() {
+            eprintln!("[waul] No wall configured for output '{}'", connector);
+        }
+
+        let (window, picture) = build_wallpaper_window(app, monitor, path);
+        state.windows.insert(connector.clone(), window);
+        state.pictures.insert(connector.clone(), picture);
+    }
 }
 
 fn activate(app: &Application) {
     let css = CssProvider::new();
     css.load_from_data(
         "
-            window  { 
+            window  {
                 background-color: #000000;
             }
-            picture { 
+            picture {
                 background-color: #000000;
                 background-image: radial-gradient(rgba(255, 255, 255, 0.06) 2px, transparent 0);
                 background-size: 30px 30px;
@@ -123,52 +189,72 @@ fn activate(app: &Application) {
     );
 
     let walls = parse_walls(PROBE_PATH);
-
     let display = Display::default().expect("Could not get default display");
-    let monitors = display.monitors();
 
-    let mut pictures: HashMap<String, Picture> = HashMap::new();
+    let state = Arc::new(Mutex::new(AppState::new()));
 
-    for i in 0..monitors.n_items() {
-        let monitor = monitors
-            .item(i)
-            .and_downcast::<gtk4::gdk::Monitor>()
-            .expect("Expected Monitor object");
-
-        let connector = monitor.connector().unwrap_or_default();
-        let connector_str = connector.as_str();
-
-        let path = walls.get(connector_str).map(|s| s.as_str()).unwrap_or("");
-        if path.is_empty() {
-            eprintln!("[waul] No wall configured for output '{}'", connector_str);
-        }
-
-        let picture = build_wallpaper_window(app, &monitor, path);
-        pictures.insert(connector_str.to_string(), picture);
+    {
+        let mut s = state.lock().unwrap();
+        reconcile_monitors(app, &display, &mut s, &walls);
     }
 
-    let state = Arc::new(Mutex::new(WallState { pictures }));
+    {
+        let app_clone     = app.clone();
+        let display_clone = display.clone();
+        let state_clone   = Arc::clone(&state);
+        let monitor_list  = display.monitors();
+
+        monitor_list.connect_items_changed(move |_, pos, removed, added| {
+            println!("[waul] monitor list changed (pos={pos} removed={removed} added={added})");
+
+            let app_inner     = app_clone.clone();
+            let display_inner = display_clone.clone();
+            let state_inner   = Arc::clone(&state_clone);
+
+            let delay_ms = if added > 0 { 200 } else { 0 };
+
+            if delay_ms == 0 {
+                glib::idle_add_local_once(move || {
+                    let walls_now = parse_walls(PROBE_PATH);
+                    let mut s = state_inner.lock().unwrap();
+                    reconcile_monitors(&app_inner, &display_inner, &mut s, &walls_now);
+                });
+            } else {
+                glib::timeout_add_local_once(Duration::from_millis(delay_ms), move || {
+                    let walls_now = parse_walls(PROBE_PATH);
+                    let mut s = state_inner.lock().unwrap();
+                    reconcile_monitors(&app_inner, &display_inner, &mut s, &walls_now);
+                });
+            }
+        });
+
+        std::mem::forget(monitor_list);
+    }
 
     let last_modified: Arc<Mutex<Option<SystemTime>>> = Arc::new(Mutex::new(
         fs::metadata(PROBE_PATH).ok().and_then(|m| m.modified().ok()),
     ));
 
-    glib::timeout_add_local(Duration::from_millis(POLL_MS), move || {
-        let current_mtime = fs::metadata(PROBE_PATH)
-            .ok()
-            .and_then(|m| m.modified().ok());
+    {
+        let state_clone = Arc::clone(&state);
 
-        let mut last = last_modified.lock().unwrap();
+        glib::timeout_add_local(Duration::from_millis(POLL_MS), move || {
+            let current_mtime = fs::metadata(PROBE_PATH)
+                .ok()
+                .and_then(|m| m.modified().ok());
 
-        if current_mtime != *last {
-            *last = current_mtime;
-            println!("[waul] info.probe changed, reloading walls...");
-            let new_walls = parse_walls(PROBE_PATH);
-            state.lock().unwrap().apply(&new_walls);
-        }
+            let mut last = last_modified.lock().unwrap();
 
-        glib::ControlFlow::Continue
-    });
+            if current_mtime != *last {
+                *last = current_mtime;
+                println!("[waul] info.probe changed, reloading walls...");
+                let new_walls = parse_walls(PROBE_PATH);
+                state_clone.lock().unwrap().apply_walls(&new_walls);
+            }
+
+            glib::ControlFlow::Continue
+        });
+    }
 }
 
 fn main() {
