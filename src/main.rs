@@ -86,9 +86,10 @@ fn build_wallpaper_window(
     image_path: &str,
 ) -> (ApplicationWindow, Picture) {
     let window = ApplicationWindow::new(app);
+    let touch = ApplicationWindow::new(app);
 
     window.init_layer_shell();
-    window.set_layer(Layer::Bottom);
+    window.set_layer(Layer::Background);
     window.set_monitor(Some(monitor));
     window.set_decorated(false);
     window.set_namespace(Some("cynideWallpaperService"));
@@ -98,6 +99,19 @@ fn build_wallpaper_window(
     window.set_anchor(Edge::Right,  true);
     window.set_exclusive_zone(-1);
     window.set_keyboard_mode(KeyboardMode::None);
+
+    touch.init_layer_shell();
+    touch.set_layer(Layer::Bottom);
+    touch.set_monitor(Some(monitor));
+    touch.set_css_classes(&["transparent"]);
+    touch.set_decorated(false);
+    touch.set_namespace(Some("cynideWallpaperService"));
+    touch.set_anchor(Edge::Top,    true);
+    touch.set_anchor(Edge::Bottom, true);
+    touch.set_anchor(Edge::Left,   true);
+    touch.set_anchor(Edge::Right,  true);
+    touch.set_exclusive_zone(-1);
+    touch.set_keyboard_mode(KeyboardMode::None);
 
     let picture = Picture::for_filename(image_path);
     picture.set_can_shrink(true);
@@ -113,12 +127,13 @@ fn build_wallpaper_window(
             .args(["-USR1", "capsule"])
             .spawn()
         {
-            eprintln!("[waul] Failed to run pkill -USR1 capsule: {}", e);
+            eprintln!("[waul] Failed to launch show-desktop: {}", e);
         }
     });
-    window.add_controller(gesture);
+    touch.add_controller(gesture);
 
     window.present();
+    touch.present();
 
     (window, picture)
 }
@@ -193,6 +208,9 @@ fn activate(app: &Application) {
                 background-image: radial-gradient(rgba(255, 255, 255, 0.06) 2px, transparent 0);
                 background-size: 30px 30px;
                 background-position: -5px -5px;
+            }
+            .transparent {
+                background-color: #0000000a;
             }
         ",
     );

@@ -762,7 +762,7 @@ dependencies = [
 
 [[package]]
 name = "waul"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "gtk4",
  "gtk4-layer-shell",
