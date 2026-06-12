@@ -59,6 +59,7 @@ fn parse_walls(probe_path: &str) -> HashMap<String, String> {
 struct AppState {
     pictures: HashMap<String, Picture>,
     windows: HashMap<String, ApplicationWindow>,
+    touch_windows: HashMap<String, ApplicationWindow>,
 }
 
 impl AppState {
@@ -66,6 +67,7 @@ impl AppState {
         Self {
             pictures: HashMap::new(),
             windows: HashMap::new(),
+            touch_windows: HashMap::new(),
         }
     }
 
@@ -84,7 +86,7 @@ fn build_wallpaper_window(
     app: &Application,
     monitor: &gtk4::gdk::Monitor,
     image_path: &str,
-) -> (ApplicationWindow, Picture) {
+) -> (ApplicationWindow, ApplicationWindow, Picture) {
     let window = ApplicationWindow::new(app);
     let touch = ApplicationWindow::new(app);
 
@@ -135,7 +137,7 @@ fn build_wallpaper_window(
     window.present();
     touch.present();
 
-    (window, picture)
+    (window, touch, picture)
 }
 
 fn snapshot_monitors(display: &Display) -> HashMap<String, gtk4::gdk::Monitor> {
@@ -175,6 +177,9 @@ fn reconcile_monitors(
         if let Some(win) = state.windows.remove(connector) {
             win.close();
         }
+        if let Some(touch) = state.touch_windows.remove(connector) {
+            touch.close();
+        }
         state.pictures.remove(connector);
     }
 
@@ -190,8 +195,9 @@ fn reconcile_monitors(
             eprintln!("[waul] No wall configured for output '{}'", connector);
         }
 
-        let (window, picture) = build_wallpaper_window(app, monitor, path);
+        let (window, touch, picture) = build_wallpaper_window(app, monitor, path);
         state.windows.insert(connector.clone(), window);
+        state.touch_windows.insert(connector.clone(), touch);
         state.pictures.insert(connector.clone(), picture);
     }
 }
