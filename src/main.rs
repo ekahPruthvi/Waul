@@ -117,6 +117,7 @@ fn build_wallpaper_window(
 
     let picture = Picture::for_filename(image_path);
     picture.set_can_shrink(true);
+    picture.set_keep_aspect_ratio(false);
     picture.set_hexpand(true);
     picture.set_vexpand(true);
 
